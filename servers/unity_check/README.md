@@ -37,8 +37,13 @@ MCP (Model Context Protocol) Unity Check Server は、エディタ統合機能�
 - 型定義の一元エクスポート
 - 型定義のエクスポートテスト
 
-#### 🔄 Week 3-5 (Day 13-25): 実装予定
-- 環境設定とロギング
+#### ✅ Week 3 (Day 13-14): 環境設定とロギング
+- 環境変数設定ファイル（.env.example）
+- 環境変数読み込み処理（src/config/environment.ts）
+- Winstonロギング設定（src/utils/logger.ts）
+
+#### 🔄 Week 3-5 (Day 15-25): 実装予定
+- .gitignoreとREADMEの更新
 - セキュリティユーティリティ
 - パフォーマンスモニター
 - バックアップマネージャー
@@ -100,11 +105,14 @@ servers/unity_check/
 │   │   ├── security.ts         # セキュリティ型
 │   │   ├── editor-adapter.ts   # エディタアダプター型
 │   │   └── index.ts            # 型定義エクスポート
+│   ├── config/         # 設定
+│   │   └── environment.ts      # 環境変数設定
+│   ├── utils/          # ユーティリティ
+│   │   └── logger.ts           # Winstonロガー
 │   ├── server/         # サーバー実装（実装予定）
 │   ├── managers/       # マネージャー実装（実装予定）
 │   ├── security/       # セキュリティ実装（実装予定）
 │   ├── adapters/       # アダプター実装（実装予定）
-│   ├── utils/          # ユーティリティ（実装予定）
 │   └── index.ts        # エントリーポイント
 ├── tests/
 │   ├── unit/           # 単体テスト
@@ -116,6 +124,21 @@ servers/unity_check/
 ```
 
 ## 🔧 設定
+
+### 環境変数設定
+
+環境変数は `.env` ファイルで設定できます。テンプレートとして `.env.example` を使用してください。
+
+| 変数名 | 説明 | デフォルト値 |
+|-------|------|-----------|
+| `PROJECT_ROOT` | プロジェクトのルートディレクトリ | `process.cwd()` |
+| `LOG_PATH` | 監査ログの出力先 | `./logs/audit.log` |
+| `MAX_CONCURRENT_REQUESTS` | 最大同時リクエスト数 | `10` |
+| `DEFAULT_TIMEOUT` | デフォルトタイムアウト（ms） | `60000` |
+| `MAX_FILE_SIZE` | 最大ファイルサイズ（バイト） | `10485760` (10MB) |
+| `BACKUP_RETENTION_DAYS` | バックアップ保存期間（日） | `7` |
+| `MAX_BACKUP_GENERATIONS` | ファイルあたりの最大バックアップ世代数 | `10` |
+| `LOG_LEVEL` | ログレベル（error/warn/info/debug） | `info` |
 
 ### TypeScript設定
 
@@ -226,7 +249,12 @@ MIT License
 
 ## 🔄 更新履歴
 
-- **2025-11-08**: Phase 1 Week 1-3（Day 1-12）完了
+- **2025-11-08 (Day 13-14)**: Phase 1 Week 3（Day 13-14）完了
+  - 環境変数設定ファイルの作成（.env.example）
+  - 環境変数読み込み処理の実装（src/config/environment.ts）
+  - Winstonロギング設定の構築（src/utils/logger.ts）
+
+- **2025-11-08 (Day 1-12)**: Phase 1 Week 1-3（Day 1-12）完了
   - プロジェクト基盤構築
   - TypeScript型定義の実装
   - テストカバレッジ100%達成
@@ -242,6 +270,6 @@ MIT License
 
 ---
 
-**現在のステータス**: Phase 1 Week 3（Day 11-12）完了 ✅
+**現在のステータス**: Phase 1 Week 3（Day 13-14）完了 ✅
 
 詳細な実装状況は [VERIFY_REPORT.md](./VERIFY_REPORT.md) を参照してください。
