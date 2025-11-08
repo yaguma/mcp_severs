@@ -41,9 +41,9 @@ export interface ToolDefinition {
  */
 export interface JSONSchema {
   type: string;
-  properties?: Record<string, any>;
+  properties?: Record<string, unknown>;
   required?: string[];
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**
