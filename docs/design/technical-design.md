@@ -212,6 +212,25 @@ interface IMCPServer {
 }
 
 /**
+ * ツール定義
+ */
+interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: JSONSchema;
+}
+
+/**
+ * JSONスキーマ型
+ */
+interface JSONSchema {
+  type: string;
+  properties?: Record<string, any>;
+  required?: string[];
+  [key: string]: any;
+}
+
+/**
  * ツールリクエスト
  */
 interface ToolRequest {
@@ -1383,32 +1402,428 @@ async function readLargeFile(path: string, maxSize: number = 10 * 1024 * 1024): 
 
 ---
 
-## 9. テスト戦略
+## 9. 実装詳細
 
-### 9.1 単体テスト
+### 9.1 ビルドツール自動検出
+
+プロジェクトタイプを自動検出するために、以下のファイルの存在をチェックするのだ：
+
+```typescript
+/**
+ * ビルドツール検出器
+ */
+class BuildToolDetector {
+  /**
+   * プロジェクトタイプを自動検出する
+   */
+  async detect(projectPath: string): Promise<BuildToolType> {
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    // package.json の存在チェック (npm/yarn/pnpm)
+    if (await this.fileExists(path.join(projectPath, 'package.json'))) {
+      return await this.detectNodePackageManager(projectPath);
+    }
+
+    // pom.xml の存在チェック (Maven)
+    if (await this.fileExists(path.join(projectPath, 'pom.xml'))) {
+      return 'maven';
+    }
+
+    // build.gradle の存在チェック (Gradle)
+    if (await this.fileExists(path.join(projectPath, 'build.gradle')) ||
+        await this.fileExists(path.join(projectPath, 'build.gradle.kts'))) {
+      return 'gradle';
+    }
+
+    // *.csproj の存在チェック (MSBuild/.NET)
+    const files = await fs.readdir(projectPath);
+    if (files.some((f: string) => f.endsWith('.csproj'))) {
+      return 'msbuild';
+    }
+
+    // *.sln の存在チェック (MSBuild/Visual Studio)
+    if (files.some((f: string) => f.endsWith('.sln'))) {
+      return 'msbuild';
+    }
+
+    throw new Error('Unknown project type: No build configuration file found');
+  }
+
+  /**
+   * Node.js パッケージマネージャーを検出する
+   */
+  private async detectNodePackageManager(projectPath: string): Promise<BuildToolType> {
+    const path = require('path');
+
+    // pnpm-lock.yaml の存在チェック
+    if (await this.fileExists(path.join(projectPath, 'pnpm-lock.yaml'))) {
+      return 'pnpm';
+    }
+
+    // yarn.lock の存在チェック
+    if (await this.fileExists(path.join(projectPath, 'yarn.lock'))) {
+      return 'yarn';
+    }
+
+    // package-lock.json の存在チェック (npm)
+    if (await this.fileExists(path.join(projectPath, 'package-lock.json'))) {
+      return 'npm';
+    }
+
+    // デフォルトはnpm
+    return 'npm';
+  }
+
+  private async fileExists(filePath: string): Promise<boolean> {
+    try {
+      await require('fs').promises.access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+type BuildToolType = 'npm' | 'yarn' | 'pnpm' | 'maven' | 'gradle' | 'msbuild';
+```
+
+### 9.2 エンコーディング自動検出
+
+ファイルのエンコーディングを自動検出する実装詳細なのだ：
+
+```typescript
+import * as chardet from 'chardet';
+import * as Encoding from 'encoding-japanese';
+
+/**
+ * エンコーディング検出器
+ */
+class EncodingDetector {
+  /**
+   * ファイルのエンコーディングを自動検出する
+   */
+  async detect(filePath: string): Promise<string> {
+    const fs = require('fs').promises;
+    const buffer = await fs.readFile(filePath);
+
+    // 1. BOM (Byte Order Mark) チェック
+    const bomEncoding = this.detectBOM(buffer);
+    if (bomEncoding) {
+      return bomEncoding;
+    }
+
+    // 2. chardet による検出
+    const detected = chardet.detect(buffer);
+    if (detected && this.isValidEncoding(detected)) {
+      return this.normalizeEncoding(detected);
+    }
+
+    // 3. 日本語エンコーディングの詳細検出
+    const japaneseEncoding = Encoding.detect(buffer);
+    if (japaneseEncoding) {
+      return this.normalizeEncoding(japaneseEncoding);
+    }
+
+    // 4. デフォルトはUTF-8
+    return 'utf-8';
+  }
+
+  /**
+   * BOMを検出する
+   */
+  private detectBOM(buffer: Buffer): string | null {
+    // UTF-8 BOM: EF BB BF
+    if (buffer.length >= 3 &&
+        buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+      return 'utf-8';
+    }
+
+    // UTF-16 LE BOM: FF FE
+    if (buffer.length >= 2 &&
+        buffer[0] === 0xFF && buffer[1] === 0xFE) {
+      return 'utf-16le';
+    }
+
+    // UTF-16 BE BOM: FE FF
+    if (buffer.length >= 2 &&
+        buffer[0] === 0xFE && buffer[1] === 0xFF) {
+      return 'utf-16be';
+    }
+
+    return null;
+  }
+
+  /**
+   * エンコーディング名を正規化する
+   */
+  private normalizeEncoding(encoding: string): string {
+    const normalized = encoding.toLowerCase().replace(/[_-]/g, '');
+
+    const encodingMap: Record<string, string> = {
+      'shiftjis': 'shift-jis',
+      'sjis': 'shift-jis',
+      'eucjp': 'euc-jp',
+      'utf8': 'utf-8',
+      'utf16le': 'utf-16le',
+      'utf16be': 'utf-16be',
+    };
+
+    return encodingMap[normalized] || encoding;
+  }
+
+  /**
+   * サポートされているエンコーディングか確認する
+   */
+  private isValidEncoding(encoding: string): boolean {
+    const supported = ['utf-8', 'shift-jis', 'euc-jp', 'utf-16le', 'utf-16be', 'ascii'];
+    return supported.includes(this.normalizeEncoding(encoding));
+  }
+}
+```
+
+### 9.3 バックアップ管理
+
+ファイル書き込み時のバックアップ戦略の詳細なのだ：
+
+```typescript
+import * as path from 'path';
+import * as fs from 'fs/promises';
+
+/**
+ * バックアップマネージャー
+ */
+class BackupManager {
+  private backupDir: string;
+  private retentionDays: number;
+  private maxGenerations: number;
+
+  constructor(
+    projectRoot: string,
+    retentionDays: number = 7,
+    maxGenerations: number = 10
+  ) {
+    this.backupDir = path.join(projectRoot, '.backup');
+    this.retentionDays = retentionDays;
+    this.maxGenerations = maxGenerations;
+  }
+
+  /**
+   * ファイルのバックアップを作成する
+   */
+  async createBackup(filePath: string): Promise<string> {
+    // バックアップディレクトリが存在しない場合は作成
+    await fs.mkdir(this.backupDir, { recursive: true });
+
+    // バックアップファイル名を生成
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const relativePath = path.relative(process.cwd(), filePath);
+    const backupFileName = `${relativePath.replace(/\//g, '_')}.${timestamp}.bak`;
+    const backupPath = path.join(this.backupDir, backupFileName);
+
+    // バックアップディレクトリの親ディレクトリを作成
+    await fs.mkdir(path.dirname(backupPath), { recursive: true });
+
+    // ファイルをコピー
+    await fs.copyFile(filePath, backupPath);
+
+    // 古いバックアップを削除
+    await this.cleanupOldBackups(filePath);
+
+    return backupPath;
+  }
+
+  /**
+   * 古いバックアップを削除する
+   */
+  private async cleanupOldBackups(originalFilePath: string): Promise<void> {
+    const relativePath = path.relative(process.cwd(), originalFilePath);
+    const pattern = `${relativePath.replace(/\//g, '_')}.`;
+
+    try {
+      const files = await fs.readdir(this.backupDir);
+      const backupFiles = files
+        .filter(f => f.startsWith(pattern))
+        .map(f => ({
+          name: f,
+          path: path.join(this.backupDir, f),
+        }));
+
+      // 1. 世代数による削除
+      if (backupFiles.length > this.maxGenerations) {
+        // 古い順にソート
+        backupFiles.sort((a, b) => a.name.localeCompare(b.name));
+
+        // 超過分を削除
+        const toDelete = backupFiles.slice(0, backupFiles.length - this.maxGenerations);
+        for (const file of toDelete) {
+          await fs.unlink(file.path);
+        }
+      }
+
+      // 2. 保存期間による削除
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - this.retentionDays);
+
+      for (const file of backupFiles) {
+        const stats = await fs.stat(file.path);
+        if (stats.mtime < cutoffDate) {
+          await fs.unlink(file.path);
+        }
+      }
+    } catch (error) {
+      // エラーが発生してもバックアップ作成は成功とする
+      console.error('Failed to cleanup old backups:', error);
+    }
+  }
+
+  /**
+   * バックアップから復元する
+   */
+  async restore(backupPath: string, targetPath: string): Promise<void> {
+    await fs.copyFile(backupPath, targetPath);
+  }
+
+  /**
+   * バックアップディレクトリの容量をチェックする
+   */
+  async checkDiskUsage(): Promise<number> {
+    let totalSize = 0;
+
+    try {
+      const files = await fs.readdir(this.backupDir, { withFileTypes: true });
+
+      for (const file of files) {
+        if (file.isFile()) {
+          const filePath = path.join(this.backupDir, file.name);
+          const stats = await fs.stat(filePath);
+          totalSize += stats.size;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to check disk usage:', error);
+    }
+
+    return totalSize;
+  }
+}
+```
+
+### 9.4 パフォーマンスモニタリング
+
+レスポンスタイムを測定・記録するための実装なのだ：
+
+```typescript
+/**
+ * パフォーマンスモニター
+ */
+class PerformanceMonitor {
+  private metrics: Map<string, number[]> = new Map();
+
+  /**
+   * 操作の実行時間を測定する
+   */
+  async measure<T>(
+    operation: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const startTime = performance.now();
+
+    try {
+      const result = await fn();
+      const endTime = performance.now();
+      const duration = endTime - startTime;
+
+      this.recordMetric(operation, duration);
+
+      return result;
+    } catch (error) {
+      const endTime = performance.now();
+      const duration = endTime - startTime;
+
+      this.recordMetric(`${operation}_error`, duration);
+
+      throw error;
+    }
+  }
+
+  /**
+   * メトリクスを記録する
+   */
+  private recordMetric(operation: string, duration: number): void {
+    if (!this.metrics.has(operation)) {
+      this.metrics.set(operation, []);
+    }
+
+    this.metrics.get(operation)!.push(duration);
+  }
+
+  /**
+   * 統計情報を取得する
+   */
+  getStatistics(operation: string): {
+    count: number;
+    average: number;
+    min: number;
+    max: number;
+    p95: number;
+  } | null {
+    const durations = this.metrics.get(operation);
+    if (!durations || durations.length === 0) {
+      return null;
+    }
+
+    const sorted = [...durations].sort((a, b) => a - b);
+    const sum = sorted.reduce((a, b) => a + b, 0);
+
+    return {
+      count: sorted.length,
+      average: sum / sorted.length,
+      min: sorted[0],
+      max: sorted[sorted.length - 1],
+      p95: sorted[Math.floor(sorted.length * 0.95)],
+    };
+  }
+
+  /**
+   * すべてのメトリクスをクリアする
+   */
+  clear(): void {
+    this.metrics.clear();
+  }
+}
+```
+
+---
+
+## 10. テスト戦略
+
+### 10.1 単体テスト
 
 - **対象**: 各マネージャークラス、バリデーター、ユーティリティ関数
 - **フレームワーク**: Jest
 - **カバレッジ目標**: 80%以上
 
-### 9.2 統合テスト
+### 10.2 統合テスト
 
 - **対象**: MCPサーバー ↔ エディタアダプター間の通信
 - **手法**: モックエディタAPIを使用した統合テスト
 
-### 9.3 E2Eテスト
+### 10.3 E2Eテスト
 
 - **対象**: 実際のVS Codeとの統合
 - **手法**: VS Code Extension Test Runner
 
 ---
 
-## 10. デプロイメント
+## 11. デプロイメント
 
-### 10.1 パッケージ構成
+### 11.1 パッケージ構成
+
+**実装ディレクトリ**: `servers/unity_check/`
 
 ```
-mcp-editor-server/
+servers/unity_check/
 ├── src/
 │   ├── server/
 │   │   ├── MCPServer.ts
@@ -1418,7 +1833,8 @@ mcp-editor-server/
 │   │   ├── FileOperationManager.ts
 │   │   ├── CodeEditorManager.ts
 │   │   ├── TerminalExecutor.ts
-│   │   └── DiagnosticsProvider.ts
+│   │   ├── DiagnosticsProvider.ts
+│   │   └── BuildToolDetector.ts
 │   ├── security/
 │   │   ├── SecurityValidator.ts
 │   │   ├── PathValidator.ts
@@ -1428,16 +1844,29 @@ mcp-editor-server/
 │   │   ├── EditorAdapter.ts
 │   │   ├── VSCodeAdapter.ts
 │   │   └── UnityEditorAdapter.ts (optional)
+│   ├── utils/
+│   │   ├── EncodingDetector.ts
+│   │   ├── BackupManager.ts
+│   │   └── PerformanceMonitor.ts
 │   ├── types/
 │   │   └── index.ts
 │   └── index.ts
 ├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+├── logs/
+│   └── .gitkeep
+├── .backup/
+│   └── .gitkeep
 ├── package.json
 ├── tsconfig.json
+├── jest.config.js
+├── .env.example
 └── README.md
 ```
 
-### 10.2 環境変数
+### 11.2 環境変数
 
 | 変数名 | 説明 | デフォルト値 |
 |-------|------|-----------|
@@ -1446,18 +1875,156 @@ mcp-editor-server/
 | `MAX_CONCURRENT_REQUESTS` | 最大同時リクエスト数 | `10` |
 | `DEFAULT_TIMEOUT` | デフォルトタイムアウト（ms） | `60000` |
 | `MAX_FILE_SIZE` | 最大ファイルサイズ（バイト） | `10485760` (10MB) |
+| `BACKUP_RETENTION_DAYS` | バックアップ保存期間（日） | `7` |
+| `MAX_BACKUP_GENERATIONS` | ファイルあたりの最大バックアップ世代数 | `10` |
+
+### 11.3 依存パッケージ
+
+#### 11.3.1 本番依存関係 (dependencies)
+
+```json
+{
+  "@modelcontextprotocol/sdk": "^1.0.0",
+  "chardet": "^2.0.0",
+  "encoding-japanese": "^2.0.0",
+  "winston": "^3.11.0",
+  "dotenv": "^16.3.1"
+}
+```
+
+| パッケージ | 用途 |
+|-----------|------|
+| `@modelcontextprotocol/sdk` | MCPプロトコル実装 |
+| `chardet` | 文字エンコーディング自動検出 |
+| `encoding-japanese` | 日本語エンコーディング変換（Shift-JIS, EUC-JP） |
+| `winston` | 構造化ロギング・ログローテーション |
+| `dotenv` | 環境変数管理 |
+
+#### 11.3.2 開発依存関係 (devDependencies)
+
+```json
+{
+  "typescript": "^5.3.0",
+  "jest": "^29.7.0",
+  "@types/node": "^20.10.0",
+  "@types/jest": "^29.5.0",
+  "ts-jest": "^29.1.0",
+  "ts-node": "^10.9.0",
+  "eslint": "^8.55.0",
+  "@typescript-eslint/parser": "^6.14.0",
+  "@typescript-eslint/eslint-plugin": "^6.14.0",
+  "prettier": "^3.1.0"
+}
+```
+
+### 11.4 package.json 例
+
+```json
+{
+  "name": "@mcp-servers/unity-check",
+  "version": "1.0.0",
+  "description": "MCP server for editor integration with VS Code and Unity",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "keywords": ["mcp", "editor", "vscode", "unity", "ai-agent"],
+  "author": "ずんだもん",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "chardet": "^2.0.0",
+    "encoding-japanese": "^2.0.0",
+    "winston": "^3.11.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "jest": "^29.7.0",
+    "@types/node": "^20.10.0",
+    "@types/jest": "^29.5.0",
+    "ts-jest": "^29.1.0",
+    "ts-node": "^10.9.0",
+    "eslint": "^8.55.0",
+    "@typescript-eslint/parser": "^6.14.0",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "prettier": "^3.1.0"
+  }
+}
+```
+
+### 11.5 tsconfig.json 例
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "moduleResolution": "node",
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "tests"]
+}
+```
+
+### 11.6 jest.config.js 例
+
+```javascript
+module.exports = {
+  preset: 'ts-jest',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/tests'],
+  testMatch: ['**/*.test.ts'],
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/index.ts'
+  ],
+  coverageThreshold: {
+    global: {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80
+    }
+  }
+};
+```
 
 ---
 
-## 11. 今後の拡張
+## 12. 今後の拡張
 
-### 11.1 フェーズ2の機能
+### 12.1 フェーズ2の機能
 
 - **Git統合**: コミット、プッシュ、プルなどのGit操作
 - **デバッガー統合**: ブレークポイント設定、ステップ実行
 - **リファクタリングツール**: シンボルのリネーム、メソッド抽出
 
-### 11.2 追加エディタサポート
+### 12.2 追加エディタサポート
 
 - JetBrains IDEs (IntelliJ, PyCharm, WebStorm)
 - Vim/Neovim
@@ -1465,15 +2032,16 @@ mcp-editor-server/
 
 ---
 
-## 12. 変更履歴
+## 13. 変更履歴
 
 | バージョン | 日付 | 変更内容 | 作成者 |
 |-----------|------|---------|--------|
 | 1.0 | 2025-11-08 | 初版作成 | ずんだもん |
+| 1.1 | 2025-11-08 | レビュー反映: 実装ディレクトリ、依存パッケージ、実装詳細を追加 | ずんだもん |
 
 ---
 
-## 13. 承認
+## 14. 承認
 
 この技術設計書は、以下の関係者によるレビューと承認が必要なのだ。
 
